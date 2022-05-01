@@ -1,20 +1,13 @@
 #!/usr/bin/env python
 
-# Deep Structured Learning Homework 1
-# Spring 2022
-
 import argparse
 import random
 import os
 from itertools import count
 from collections import defaultdict
-import sys 
 
-from scipy.signal import convolve2d
 import numpy as np
 import matplotlib.pyplot as plt
-
-#np.set_printoptions(threshold=sys.maxsize)
 
 
 def configure_seed(seed):
@@ -68,65 +61,49 @@ def load_data(path, feature_rep=None, bias=False, dev_fold=8, test_fold=9):
             "test": (test_X, test_y)}
 
 
-def edge_detection(x, kernel):
-
-    new_representation_x = convolve2d(x, kernel, 'valid') 
-    new_representation_y = convolve2d(x, np.flip(kernel.T, axis=0), 'valid')
-
-    new_repr = np.sqrt(np.square(new_representation_x) + np.square(new_representation_y))
-    new_repr *= 255.0 / new_repr.max()
-
-    new_repr = np.where(new_repr > 128, 1, 0)
-    
-    return new_repr
-
 def custom_features(X):
     """
     X (n_examples x n_features)
-    returns (n_examples x ((px_height-2)x(px_width-2)): It's up to you to define an interesting feature
+    returns (n_examples x ???): It's up to you to define an interesting feature
         representation. One idea: pairwise pixel features (see the handout).
-    inspired by http://www.adeveloperdiary.com/data-science/computer-vision/how-to-implement-sobel-edge-detection-using-python-from-scratch/
-    and https://medium.com/swlh/image-processing-with-python-convolutional-filters-and-kernels-b9884d91a8fd
     """
     # Q2.2 a
+    feat_size = X.shape[1]
+    ix = np.triu_indices(feat_size)
+    return np.array([np.outer(x_i, x_i)[ix] for x_i in X])
 
-    # change representation of each image to 2D
-    X_2D = np.empty((8,16,X.shape[0]))
-    for x in np.arange(X.shape[0]):
-        X_2D[:,:,x] = np.reshape(X[x,:], (X_2D.shape[:2]))
-    
-    kernel = np.array([[-1, 0, 1], [-1, 0, 1], [-1, 0, 1]]) # Prewitt kernel
-    
-    # apply kernel to get edges
-    X_2D_edge = np.empty((6,14,X_2D.shape[2]))
-    for x in np.arange(X_2D.shape[2]):
-        X_2D_edge[:,:,x] = edge_detection(X_2D[:,:,x], kernel)
 
-    # change representation of each image back to 1D
-    custom_X = np.empty((X_2D_edge.shape[2], X_2D_edge.shape[0]*X_2D_edge.shape[1]))
-    for x in np.arange(X_2D.shape[2]):
-        custom_X[x,:] = np.reshape(X_2D_edge[:,:,x], (1,-1))
+def relu(z):
+    return np.clip(z, 0, None)
 
-    return custom_X
+
+def relu_prime(z):
+    return z > 0
+
+
+f_derivatives = {relu: relu_prime}
+
+
+def softmax(z, axis=None):
+    raw = np.exp(z)
+    return raw / raw.sum(axis=axis)
 
 
 class LinearModel(object):
     def __init__(self, n_classes, n_features, **kwargs):
         self.W = np.zeros((n_classes, n_features))
-        #print(f'dimension: {self.W.shape}')
 
-    def update_weights(self, x_i, y_i, **kwargs):
+    def update_weight(self, x_i, y_i, **kwargs):
         raise NotImplementedError
 
     def train_epoch(self, X, y, **kwargs):
         for x_i, y_i in zip(X, y):
-            self.update_weights(x_i, y_i, **kwargs)
+            self.update_weight(x_i, y_i, **kwargs)
 
     def predict(self, X):
         """X (n_examples x n_features)"""
         scores = np.dot(self.W, X.T)  # (n_classes x n_examples)
         predicted_labels = scores.argmax(axis=0)  # (n_examples)
-        print(f'\n predicted labels: {predicted_labels}')
         return predicted_labels
 
     def evaluate(self, X, y):
@@ -141,92 +118,111 @@ class LinearModel(object):
 
 
 class Perceptron(LinearModel):
-    def update_weights(self, x_i, y_i, **kwargs):
+    def update_weight(self, x_i, y_i, **kwargs):
         """
         x_i (n_features): a single training example
         y_i (scalar): the gold label for that example
         other arguments are ignored
         """
         # Question 2.1 b
-
-        y_hat = np.dot(self.W, x_i)
-       
-        # one-hot encoding
-        y = np.zeros(y_hat.shape)
-        y[y_i] = 1
-
-        self.W = self.W - np.dot(np.reshape((y_hat-y), (-1,1)), np.reshape(x_i, (1,-1)))
-        
-
+        scores = np.dot(self.W, x_i)
+        y_hat = scores.argmax()
+        if y_hat != y_i:
+            self.W[y_i] += x_i
+            self.W[y_hat] -= x_i
 
 
 class LogisticRegression(LinearModel):
-
-    def sigmoid(self, x_i):
-        return 1 / (1 + np.exp(-(np.dot(self.W, x_i))))
-
-
-    def update_weights(self, x_i, y_i, learning_rate=0.001, l2_penalty=0.0):
+    def update_weight(self, x_i, y_i, learning_rate=0.001, l2_penalty=0.0):
         """
         x_i (n_features): a single training example
         y_i: the gold label for that example
         learning_rate (float): keep it at the default value for your plots
         l2_penalty (float): BONUS
         """
-        # Question 2.1 c
-
-        cond_prob = self.sigmoid(x_i) / sum(self.sigmoid(x_i))
-
-        y = np.zeros(cond_prob.shape)
-        y[y_i] = 1
-
-        self.W = self.W - learning_rate * (np.dot(np.reshape((cond_prob-y), (-1,1)), np.reshape(x_i, (1,-1))))
-
-
-
-
-        
+        # Question 2.2 b
+        scores = np.dot(self.W, x_i)
+        probs = softmax(scores)
+        self.W[y_i] += learning_rate * x_i
+        self.W -= learning_rate * np.outer(probs, x_i)
+        self.W += learning_rate * l2_penalty * self.W
 
 
 class MLP(object):
-    # Q3. This MLP skeleton code allows the MLP to be used in place of the
-    # linear models with no changes to the training loop or evaluation code
-    # in main().
-    def __init__(self, n_classes, n_features, hidden_size):
-        # Initialize an MLP with a single hidden layer.
-        raise NotImplementedError
+    def __init__(self, n_classes, n_features, hidden_size, layers):
+        in_sizes = [n_features] + [hidden_size for i in range(layers)]
+        out_sizes = [hidden_size for i in range(layers)] + [n_classes]
+        self.weights = [np.random.normal(size=(in_size, out_size), loc=0.1)
+                        for in_size, out_size in zip(in_sizes, out_sizes)]
+        self.biases = [np.zeros(out_size) for out_size in out_sizes]
+        self.activations = [relu for i in range(layers)] + [softmax]
 
     def predict(self, X):
-        # Compute the forward pass of the network. At prediction time, there is
-        # no need to save the values of hidden nodes, whereas this is required
-        # at training time.
-        raise NotImplementedError
+        # forward pass but without caching intermediate values
+        result = []
+        for x_i in X:
+            input = x_i
+            for w, g, b in zip(self.weights, self.activations, self.biases):
+                z_i = np.dot(input, w) + b
+                input = g(z_i)
+            result.append(input)
+        return np.array(result).argmax(axis=1)
 
     def evaluate(self, X, y):
-        """
-        X (n_examples x n_features):
-        y (n_examples): gold labels
-        """
-        # Identical to LinearModel.evaluate()
         y_hat = self.predict(X)
         n_correct = (y == y_hat).sum()
         n_possible = y.shape[0]
         return n_correct / n_possible
 
     def train_epoch(self, X, y, learning_rate=0.001):
-        raise NotImplementedError
+        # in which they need to implement backpropagation
+        for x_i, y_i in zip(X, y):
+            hiddens = [x_i]  # possibly a kludge
+            z = []
+            # forward pass
+            for w, g, b in zip(self.weights, self.activations, self.biases):
+                z_i = np.dot(hiddens[-1], w) + b
+                z.append(z_i)
+                hiddens.append(g(z_i))
+
+            # backward pass
+            L = len(self.weights)
+            z_grads = [None] * L
+            h_grads = [None] * L
+            w_grads = [None] * L
+            b_grads = [None] * L
+
+            # compute output gradient
+            out_grad = hiddens.pop()  # sneakily remove the output from hiddens
+            out_grad[y_i] -= 1
+            z_grads[-1] = out_grad
+
+            for i in reversed(range(len(self.weights))):
+                # compute dL/dW[i]
+                w_grads[i] = np.outer(hiddens[i], z_grads[i])
+                b_grads[i] = z_grads[i]
+                if i > 0:
+                    # compute gradient of hidden layer
+                    # (not needed for i - 1 b/c hidden[0] is actually x_i
+                    h_grads[i] = np.dot(z_grads[i], self.weights[i].T)
+                    activation_prime = f_derivatives[self.activations[0]]
+                    # compute gradient of hidden layer (before activation)
+                    z_grads[i - 1] = h_grads[i] * activation_prime(z[i - 1])
+            # update weights
+            for w, w_grad in zip(self.weights, w_grads):
+                w -= learning_rate * w_grad
+            for b, b_grad in zip(self.biases, b_grads):
+                b -= learning_rate * b_grad
 
 
-def plot(epochs, valid_accs, test_accs, opt):
+def plot(epochs, valid_accs, test_accs):
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
     plt.xticks(epochs)
     plt.plot(epochs, valid_accs, label='validation')
     plt.plot(epochs, test_accs, label='test')
     plt.legend()
-    plt.title(f'MODEL: {opt.model} | CUSTOM FEATURES: {opt.custom_features}')
     plt.show()
-    plt.savefig(f'acc_over_epochs_model-{opt.model}_custom-{opt.custom_features}.png')
 
 
 def main():
@@ -248,11 +244,16 @@ def main():
                         samples in the dataset. In an MLP, where there can be
                         biases for each neuron, adding a bias feature to the
                         input is not sufficient.""")
+    # these three arguments should not be in the student version
+    parser.add_argument('-hidden_size', type=int, default=100)
+    parser.add_argument('-layers', type=int, default=1)
+    parser.add_argument('-learning_rate', type=float, default=0.001)
     opt = parser.parse_args()
 
     configure_seed(seed=42)
 
-    feature_function = custom_features if opt.custom_features else None
+    #feature_function = custom_features if opt.custom_features else None
+    feature_function = pairwise_features if not opt.no_pairwise else None
     data = load_data(opt.data, bias=opt.bias, feature_rep=feature_function)
     train_X, train_y = data["train"]
     dev_X, dev_y = data["dev"]
@@ -267,10 +268,8 @@ def main():
     elif opt.model == 'logistic_regression':
         model = LogisticRegression(n_classes, n_feats)
     else:
-        # Q3. Be sure to experiment with different values for hidden_size.
-        hidden_size = 1  # tune me!
-        model = MLP(n_classes, n_feats, hidden_size)
-    
+        # Q3
+        model = MLP(n_classes, n_feats, opt.hidden_size, opt.layers)
     epochs = np.arange(1, opt.epochs + 1)
     valid_accs = []
     test_accs = []
@@ -279,12 +278,18 @@ def main():
         train_order = np.random.permutation(train_X.shape[0])
         train_X = train_X[train_order]
         train_y = train_y[train_order]
-        model.train_epoch(train_X, train_y)
+        if opt.model == 'mlp':
+            model.train_epoch(train_X, train_y, learning_rate=opt.learning_rate)
+        else:
+            model.train_epoch(train_X, train_y)
         valid_accs.append(model.evaluate(dev_X, dev_y))
         test_accs.append(model.evaluate(test_X, test_y))
+        print('dev: {:.4f} | test: {:.4f}'.format(
+            valid_accs[-1], test_accs[-1],
+        ))
 
     # plot
-    plot(epochs, valid_accs, test_accs, opt)
+    plot(epochs, valid_accs, test_accs)
 
 
 if __name__ == '__main__':
