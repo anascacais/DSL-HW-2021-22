@@ -27,9 +27,13 @@ class BiLSTMWithCRF(nn.Module):
         self.pad_value = pad_value
         self.hidden_size = hidden_size
 
-        self.ff = nn.Linear(n_features, hidden_size) 
-        self.bilstm = nn.LSTM(hidden_size, hidden_size//2, bidirectional=True)
-        self.affine = nn.Linear(hidden_size, n_classes)
+        self.ff = nn.Sequential(
+                nn.Linear(n_features, hidden_size),
+                nn.ReLU(),
+                nn.Dropout(dropout))
+        #self.ff = nn.Linear(n_features, hidden_size) 
+        self.bilstm = nn.LSTM(hidden_size, hidden_size, bidirectional=True, batch_first=True)
+        self.affine = nn.Linear(hidden_size*2, n_classes)
         self.crf = LinearChainCRF(n_classes)
         self.softmax = nn.Softmax(dim=1)
 
@@ -44,30 +48,34 @@ class BiLSTMWithCRF(nn.Module):
         return mask.all(dim=-1)
 
 
-    def forward(self, X):
+    def forward(self, X, get_scores=False):
 
         output = self.ff(X)
         output, (_,_) = self.bilstm(output)
         output = self.affine(output) # lstm feats for crf
+
+        if get_scores:
+            return output
         
         if self.use_crf:
-            scores = output # emissions
+            output,_ = self.crf(output) # emissions
         else:
-            scores = self.softmax(output)
+            output = self.softmax(output)
 
-        return scores
+        return output
 
 
-    def loss(self, y_pred_onehot, y_true):
+    def loss(self, output, y_true):
 
         if not self.use_crf:
             y_true_onehot = onehot_encode(y_true, self.n_classes)
             y_true_onehot = y_true_onehot.type(torch.FloatTensor)
-            y_pred_onehot = y_pred_onehot.type(torch.FloatTensor)
-            loss = self.criterion(y_pred_onehot, y_true_onehot)
+            output = output.type(torch.FloatTensor)
+            loss = self.criterion(output, y_true_onehot)
         
         else: 
-            loss = self.crf.neg_log_likelihood(y_pred_onehot, y_true)
+            scores = self.forward(output, get_scores=True)
+            loss = self.crf.neg_log_likelihood(scores, y_true)
 
         return loss
 
@@ -81,8 +89,11 @@ def train_batch(X, y, model, optimizer, gpu_id=None):
     X, y = X.to(gpu_id), y.to(gpu_id)
     model.train()
     optimizer.zero_grad()
-    out = model(X)
-    loss = model.loss(out, y)
+    if model.use_crf:
+        loss = model.loss(X, y)
+    else:
+        out = model(X)
+        loss = model.loss(out, y)
     loss.backward()
     optimizer.step()
     return loss.item()
@@ -97,7 +108,8 @@ def evaluate(model, dataloader, gpu_id=None):
             print('eval {} of {}'.format(i + 1, len(dataloader)), end='\r')
             x_batch, y_batch = x_batch.to(gpu_id), y_batch.to(gpu_id)
             y_pred = model(x_batch)
-            y_pred = torch.argmax(y_pred, dim=2)
+            if not model.use_crf:
+                y_pred = torch.argmax(y_pred, dim=2)
             #print(f'y pred: {y_pred.shape}')
             #print(f'y batch: {y_batch.shape}')
             y_hat.extend([y_ for y in y_pred for y_ in y])  # y_pred is a list of lists
@@ -115,8 +127,8 @@ def main():
                         help="Path to letter.data OCR corpus.")
     parser.add_argument('-epochs', type=int, default=20)
     parser.add_argument('-hidden_size', type=int, default=100)
-    parser.add_argument('-dropout', type=float, default=0.3)
-    parser.add_argument("-use_crf", action="store_true", help="Whether to use a CRF as the final layer")
+    parser.add_argument('-dropout', type=float, default=0.5)
+    parser.add_argument("-use_crf", action="store_true", help="Whether to use a CRF as the final layer",default=False)
     parser.add_argument('-learning_rate', type=float, default=.001)
     parser.add_argument('-l2_decay', type=float, default=0.)
     parser.add_argument('-batch_size', type=int, default=1)
