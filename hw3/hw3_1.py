@@ -3,6 +3,7 @@
 
 # # built-in
 import argparse
+from re import T
 import time
 
 # third-party
@@ -12,7 +13,7 @@ from torch import optim
 
 # local
 from language import prepareData
-from seq2seq2 import DecoderLSTM, EncoderLSTM, Seq2Seq
+from seq2seq import AttentionDecoderLSTM, DecoderLSTM, EncoderLSTM, Seq2Seq
 from utils import configure_device, configure_seed, plot
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -152,7 +153,7 @@ def main():
     parser.add_argument("-batch_size", type=int, default=1)
     parser.add_argument("-gpu_id", type=int, default=None)
     parser.add_argument("-seed", type=int, default=42)
-    parser.add_argument("-attention", type=int, default=True)
+    parser.add_argument("-attention", type=int, default=False)
     parser.add_argument("-invert_src", type=int, default=True)
     opt = parser.parse_args()
 
@@ -165,9 +166,16 @@ def main():
 
     print(f"Vocabulary sizes: ({input_lang.name}) {input_lang.n_tokens} | ({target_lang.name}) {target_lang.n_tokens}")
 
-    encoder = EncoderLSTM(input_lang.n_tokens, opt.embd_size, opt.hidden_size, opt.dropout, opt.attention).to(device)
-    decoder = DecoderLSTM(target_lang.n_tokens, opt.embd_size, opt.hidden_size, opt.dropout, opt.attention).to(device)
-    model = Seq2Seq(encoder, decoder, device).to(device)
+    encoder = EncoderLSTM(
+        input_lang.n_tokens, opt.embd_size, opt.hidden_size, opt.dropout, bidirectional=opt.attention
+    ).to(device)
+
+    if opt.attention:
+        decoder = AttentionDecoderLSTM(target_lang.n_tokens, opt.embd_size, opt.hidden_size, opt.dropout).to(device)
+    else:
+        decoder = DecoderLSTM(target_lang.n_tokens, opt.embd_size, opt.hidden_size, opt.dropout).to(device)
+
+    model = Seq2Seq(encoder, decoder, device, opt.attention).to(device)
 
     train_epochs(model, input_lang, target_lang, train_pairs, eval_pairs, test_pairs, opt)
 
